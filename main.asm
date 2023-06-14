@@ -52,6 +52,22 @@ YPOS
 TMP
 
 ;######################################
+; Dirección de variables  utilizadas
+; para guardar valores BCD y ASCII
+;######################################
+UNI
+DEC
+CEN
+MIL
+
+;######################################
+; Dirección de variables  utilizadas
+; como contador de TMR0 y TMR1
+;######################################
+TMR0_CNT
+TMR1_CNT
+
+;######################################
 ; Dirección y valores de  variables
 ; utilizadas en retardo por software
 ;######################################
@@ -70,13 +86,18 @@ ZVAL        EQU        0xFF
 ;######################################
 W_TEMP      EQU        0x70
 STATUS_TEMP EQU        0x71
-STATUS_TMP2 EQU        0x72
 
+;######################################
+; Dirección de variables  utilizadas
+; para guardar valores de ADC
+;######################################
+	    CBLOCK     0x72
+ADCL
+ADCH
 ;######################################
 ; Dirección de variables
 ; utilizadas en rutina multiplicación
 ;######################################
-	    CBLOCK     0x73
 MUL1
 MUL2
 RESL
@@ -87,7 +108,7 @@ RESH
 ; Vector de Inicio de programa
 ;######################################
 	    ORG        0x00
-	    goto       INICIO
+	    goto       MAIN
 	    
 	    ORG        0x04            ; Vector de Interrupción
 	    goto       INT_R
@@ -100,8 +121,14 @@ INT_R
 	    movwf      W_TEMP
 	    swapf      STATUS, w
 	    movwf      STATUS_TEMP
-	    ;btfsc      INTCON, T0IF
-	    ;call       T0_INT
+	    bcf        STATUS, RP0
+	    bcf        STATUS, RP1
+	    btfsc      INTCON, T0IF
+	    call       TMR0_INT
+	    btfsc      PIR1, TMR1IF
+	    call       TMR1_INT
+	    btfsc      PIR1, ADIF
+	    call       ADC_INT
 	    ;btfsc      INTCON, INTF
 	    ;call       RB0_INT
 	    swapf      STATUS_TEMP, w
@@ -109,9 +136,57 @@ INT_R
 	    swapf      W_TEMP, f
 	    swapf      W_TEMP, w
 	    retfie
+
+;######################################
+; Rutina de interrupción de TMR0
+;######################################
+TMR0_INT
+	    decfsz     TMR0_CNT
+	    goto       T0_INT_END
+	    call       MAIN_SCREEN        ; Refresca vista en display
+	    movlw      0x0A               ; Carga 10
+	    movwf      TMR0_CNT           ; ... en cuenta de TMR0
+T0_INT_END  movlw      0x3C               ; Configura T de TMR0
+	    movwf      TMR0               ; ... en 50 ms
+	    bcf        INTCON, T0IF       ; Baja TMR0 flag
+	    return
 	    
 ;######################################
-; Rutina de multiplicación.
+; Rutina de interrupción de TMR1
+;######################################
+TMR1_INT
+	    decfsz     TMR1_CNT            ; Decrementa el contador
+	    goto       T1_INT_END          ; ... si pasó 1 seg,
+	    btfsc      PORTC, 4            ; ... togglea el led
+	    goto       LED_OFF
+	    bsf        PORTC, 4
+	    movlw      0x02
+	    movwf      TMR1_CNT
+	    goto       T1_INT_END
+LED_OFF	    bcf        PORTC, 4
+	    movlw      0x02
+	    movwf      TMR1_CNT
+T1_INT_END  clrf       TMR1L               ; Reinicia el TMR1
+	    clrf       TMR1H
+	    bcf        PIR1, TMR1IF        ; Baja TMR1 flag
+	    return	    
+
+;######################################
+; Rutina de interrupción de ADC
+;######################################
+ADC_INT
+	    bsf        STATUS, RP0
+	    movf       ADRESL, w            ; Guarda byte L
+	    movwf      ADCL                 ; ... en ADCL
+	    bcf        STATUS, RP0
+	    movf       ADRESH, w            ; Guarda byte H
+	    movwf      ADCH                 ; ... en ADCH
+	    bcf        PIR1, ADIF           ; Baja ADC flag
+	    bsf        ADCON0, GO           ; inicia nueva conversión
+	    return
+	       
+;######################################
+; Rutina de multiplicación 8x8 -> 16.
 ; Multiplica MUL1 y MUL2.
 ; Guarda resultado en RESL y RESH
 ;######################################
@@ -121,17 +196,69 @@ MULT
 	    movf       MUL1, w       ; Mueve MUL1 a w
 MULT_LOOP   addwf      RESL, f       ; Suma MUL1 (w) a RESL, MUL2 veces
 	    btfsc      STATUS, 0     ; Si hay overflow en la suma
-	    incf       RESH, f        ; ... incrementa RESH
+	    incf       RESH, f       ; ... incrementa RESH
 	    decfsz     MUL2, f       ; Decrementa MUL2, si no es 0
 	    goto       MULT_LOOP     ; Vuelve a repetir
 	    return                   ; Si es 0, terminó la multiplicación
 
 ;######################################
+; Rutina para convertir valor de ADC
+; a BCD. Guarda resultado en
+; UNI, DEC, CEN y MIL
+;######################################
+TO_BCD
+	    clrf       DEC        ; Inicio registros DEC = 0,
+	    clrf       CEN        ; ... CEN = 0
+	    clrf       MIL        ; ... y MIL = 0
+	    movf       ADCL, w    ; Cargo ADCL 
+	    movwf      UNI        ; ... en UNI
+INI_BCD	    movlw      0x0A       ; resto 10
+	    subwf      UNI, w     ; ... a UNI
+	    btfsc      STATUS, 0  ; Si UNI > 10                    
+	    goto       CONTINUE   ; Continuo
+	    movf       ADCH, f    ; Si UNI < 10, reviso ADCH
+	    btfsc      STATUS, 2  ; Si es 0
+	    return                ; return, BCD == UNI
+	    decf       ADCH, f    ; Si no, decremento ADCH
+CONTINUE    movlw      0x0A
+	    subwf      UNI, w
+	    movwf      UNI        ; else,
+	    incf       DEC, f     ; ... DEC++
+	    movlw      0x0A       ; sub
+	    subwf      DEC, w     ; ... DEC - 10
+	    btfss      STATUS, 0  ; if DEC < 0
+	    goto       INI_BCD    ; goto next UNI
+	    incf       CEN, f     ; else CEN++
+	    clrf       DEC        ;
+	    
+	    movlw      0x0A       ; sub
+	    subwf      CEN, w     ; ... DEC - 10
+	    btfss      STATUS, 0  ; if DEC < 0
+	    goto       INI_BCD    ; goto next UNI
+	    incf       MIL, f     ; else CEN++
+	    clrf       CEN        ;
+	    
+	    goto       INI_BCD    ; start over
+
+;######################################
+; Rutina para convertir valor de ADC
+; BCD en ASCII. Guarda resultado en
+; UNI, DEC, CEN y MIL
+;######################################
+TO_ASCII
+	    bcf        STATUS, RP0
+	    bcf        STATUS, RP1
+	    movlw      0x30
+	    addwf      UNI, f
+	    addwf      DEC, f
+	    addwf      CEN, f
+	    addwf      MIL, f
+	    return
+	    
+;######################################
 ; Rutina de retardo por software
 ;######################################
 RETARDO 
-	    swapf      STATUS, w
-	    movwf      STATUS_TMP2
 	    bcf        STATUS, RP0
 	    bcf        STATUS, RP1
 	    movlw      ZVAL            ; ti
@@ -146,8 +273,6 @@ CUENTA1	    decfsz     C1,1            ; ((ti*(x-1) + 2*ti )*y)*z
 	    goto       CUENTA2         ; (2*ti*(y-1)          )*z
 	    decfsz     C3,1            ; ti*(z-1) + 2*ti
 	    goto       CUENTA3         ; 2*ti*(z-1)
-	    swapf      STATUS_TMP2, w
-	    movwf      STATUS
 	    return
 
 ;######################################
@@ -321,8 +446,19 @@ MAIN_SCREEN
 	    call       WRITE_CHAR
 	    movlw      0x20           ; 
 	    call       WRITE_CHAR
-	    movlw      0x30           ; 0
+	    
+	    call       TO_BCD
+	    call       TO_ASCII
+	    
+	    movf       MIL, w
 	    call       WRITE_CHAR
+	    movf       CEN, w
+	    call       WRITE_CHAR
+	    movf       DEC, w
+	    call       WRITE_CHAR
+	    movf       UNI, w
+	    call       WRITE_CHAR
+	    
 	    
 	    movlw      0x01
 	    movwf      XPOS
@@ -360,42 +496,106 @@ INIT_CLOCK
 ;######################################
 INIT_PORTS
 	    bsf        STATUS, RP0
-	    clrf       TRISD
-	    clrf       TRISC
+	    movlw      0x01
+	    movwf      TRISA           ; A0 input, resto output
+	    clrf       TRISC           ; Puerto C output
+	    clrf       TRISD           ; Puerto D output
+	    clrf       TRISE           ; Puerto E output
 	    bsf        STATUS, RP1
-	    clrf       ANSEL
+	    movlw      0x01
+	    movwf      ANSEL           ; A0 analog input
 	    clrf       ANSELH
 	    bcf        STATUS, RP0
 	    bcf        STATUS, RP1
+	    clrf       PORTA           ; Puerto A en bajo
+	    clrf       PORTC           ; Puerto C en bajo
 	    movlw      0xFF
-	    movwf      PORTD
-	    clrf       PORTC
+	    movwf      PORTD           ; Puerto D en alto
+	    clrf       PORTE           ; Puerto E en bajo
 	    return
 
+;######################################
+; Inicialización de ADC.
+;######################################
+INIT_ADC
+	    bsf        STATUS, RP0
+	    bcf        STATUS, RP1
+	    movlw      0x80             ; ADC justificado a la derecha,
+	    movwf      ADCON1           ; ... Vdd y Vss referencia
+	    bcf        STATUS, RP0
+	    movlw      0xC0
+	    movwf      ADCON0           ; clock interno
+	    bsf        ADCON0, ADON     ; ADC enable
+	    call       RETARDO          ; Delay de inicialización
+	    bsf        ADCON0, GO       ; Start ADC
+	    return
+
+;######################################
+; Inicialización de TMR0.
+;######################################
+INIT_TMR0
+	    bsf        STATUS, RP0
+	    bcf        STATUS, RP1
+	    movlw      0x07
+	    addwf      OPTION_REG, f     ; PS a TMR0, PS = 256
+	    bcf        STATUS, RP0
+	    movlw      0x0A              ; Carga 10
+	    movwf      TMR0_CNT          ; ... en contador de TMR0
+	    movlw      0x3C
+	    movwf      TMR0              ; TMR0 = 3C, T = 50 ms
+	    return
+
+;######################################
+; Inicialización de TMR1.
+;######################################
+INIT_TMR1
+	    bcf        STATUS, RP0
+	    bcf        STATUS, RP1
+	    movlw      0x02
+	    movwf      TMR1_CNT
+	    clrf       TMR1L
+	    clrf       TMR1H
+	    movlw      0x31
+	    movwf      T1CON            ; PS = 8, TMR1ON
+	    return
+	    
+;######################################
+; Inicialización de interrupciones.
+;######################################
+INIT_INT
+	    bsf        STATUS, RP0
+	    bcf        STATUS, RP1
+	    movlw      0x41
+	    movwf      PIE1              ; ADIE y TMR1IE
+	    movlw      0xE8
+	    movwf      INTCON            ; GIE, PEIE, T0IE, RBIE
+	    return
+	    
 ;######################################
 ; Rutina principal.
 ; Programa comienza aquí.
 ;######################################
-INICIO
+MAIN
 	    call       INIT_CLOCK
 	    call       INIT_PORTS
 	    call       INIT_DISP
-	    call       MAIN_SCREEN
+	    call       INIT_ADC
+	    call       INIT_TMR0
+	    call       INIT_TMR1
+	    call       INIT_INT
 	    
+	    bcf        STATUS, RP0
+	    bcf        STATUS, RP1
 	    bsf        PORTC, 4
-LOOP        call       RETARDO
-	    btfsc      PORTC, 4
-	    goto       LED_OFF
-	    bsf        PORTC, 4
-	    goto       LOOP
-LED_OFF	    bcf        PORTC, 4
- 	    goto       LOOP
+            nop
+	    goto       $
 
 	    
-	    ORG        0x0800
+	    ORG        0x0800             ; Inicio de Página 1
 ;######################################
 ; Rutina de llamado de tabla ASCII.
-; Maneja cambio de páginas en llamada.
+; Maneja cambio de página  y cambio 
+; de PCLATH en llamada.
 ;######################################
 TABLE_CALL
 	    movwf      TMP
