@@ -74,6 +74,30 @@ TMR1_CNT
 C1
 C2
 C3
+
+;######################################
+; Dirección de variables
+; utilizadas en rutina multiplicación
+;######################################
+MUL1
+MUL2L
+MUL2H
+RESL
+RESH
+
+;######################################
+; Dirección de variables
+; utilizadas en rutina división
+;######################################
+ACCaLO
+ACCaHI
+ACCbLO
+ACCbHI
+ACCcLO
+ACCcHI
+ACCdLO
+ACCdHI
+temp
 	    ENDC
 	    
 XVAL        EQU        0x10
@@ -94,14 +118,8 @@ STATUS_TEMP EQU        0x71
 	    CBLOCK     0x72
 ADCL
 ADCH
-;######################################
-; Dirección de variables
-; utilizadas en rutina multiplicación
-;######################################
-MUL1
-MUL2
-RESL
-RESH
+ADCL_TMP
+ADCH_TMP
 	    ENDC
 
 ;######################################
@@ -193,52 +211,108 @@ ADC_INT
 MULT
             clrf       RESL          ; Limpia RESL
 	    clrf       RESH          ; Limpia RESH
-	    movf       MUL1, w       ; Mueve MUL1 a w
-MULT_LOOP   addwf      RESL, f       ; Suma MUL1 (w) a RESL, MUL2 veces
+MULT_LOOP   movf       MUL1, w       ; Mueve MUL1 a w
+            addwf      RESL, f       ; Suma MUL1 (w) a RESL
 	    btfsc      STATUS, 0     ; Si hay overflow en la suma
 	    incf       RESH, f       ; ... incrementa RESH
-	    decfsz     MUL2, f       ; Decrementa MUL2, si no es 0
-	    goto       MULT_LOOP     ; Vuelve a repetir
-	    return                   ; Si es 0, terminó la multiplicación
+	    movlw      0x01          ; Decrementa en 1
+	    subwf      MUL2L, f      ; ... MUL2L
+	    btfss      STATUS, 2     ; Si el resultado es no 0
+	    goto       TEST_OF       ; ... verifica si desbordó
+	    goto       TEST_H        ; ... si es 0, verifica si MUL2H es 0
+TEST_OF     btfss      STATUS, C     ; Si desbordó la resta de MUL2L
+	    decf       MUL2H, f      ; ... decrementa MUL2H
+	    goto       MULT_LOOP
+TEST_H	    movf       MUL2H, f      ; Prueba si MUL2H 
+	    btfsc      STATUS, 2     ; ... también es 0
+	    return                   ; Si ambos son 0, terminó la multiplicación
+	    goto       MULT_LOOP
 
+;######################################
+; Rutina de división 16x16 -> 16.
+; 
+; 
+;######################################
+D_divS
+            call       setup
+            clrf       ACCcHI
+            clrf       ACCcLO
+dloop       bcf        STATUS,C
+            rlf        ACCdLO, F
+            rlf        ACCdHI, F
+            rlf        ACCcLO, F
+            rlf        ACCcHI, F
+            movf       ACCaHI,W
+            subwf      ACCcHI,W   ; check if a>c
+            btfss      STATUS,Z
+            goto       nochk
+            movf       ACCaLO,W
+            subwf      ACCcLO,W   ; if msb equal then check lsb
+nochk       btfss      STATUS,C   ; carry set if c>a
+            goto       nogo
+            movf       ACCaLO,W   ; c-a into c
+            subwf      ACCcLO, F
+            btfss      STATUS,C
+            decf       ACCcHI, F
+            movf       ACCaHI,W
+            subwf      ACCcHI, F
+            bsf        STATUS,C   ; shift a 1 into b (result)
+nogo        rlf        ACCbLO, F
+            rlf        ACCbHI, F
+            decfsz     temp, F    ; loop untill all bits checked
+            goto       dloop
+            retlw      0
+setup 
+	    movlw      .16        ; for 16 shifts
+            movwf      temp
+            movf       ACCbHI,W   ; move ACCb to ACCd
+            movwf      ACCdHI
+	    movf       ACCbLO,W
+            movwf      ACCdLO
+            clrf       ACCbHI
+            clrf       ACCbLO
+            retlw      0
+	    
 ;######################################
 ; Rutina para convertir valor de ADC
 ; a BCD. Guarda resultado en
 ; UNI, DEC, CEN y MIL
 ;######################################
 TO_BCD
+	    movf       ADCL, w
+	    movwf      ADCL_TMP
+	    movf       ADCH, w
+	    movwf      ADCH_TMP
 	    clrf       DEC        ; Inicio registros DEC = 0,
 	    clrf       CEN        ; ... CEN = 0
 	    clrf       MIL        ; ... y MIL = 0
-	    movf       ADCL, w    ; Cargo ADCL 
+	    movf       ADCL_TMP, w    ; Cargo ADCL 
 	    movwf      UNI        ; ... en UNI
 INI_BCD	    movlw      0x0A       ; resto 10
 	    subwf      UNI, w     ; ... a UNI
 	    btfsc      STATUS, 0  ; Si UNI > 10                    
 	    goto       CONTINUE   ; Continuo
-	    movf       ADCH, f    ; Si UNI < 10, reviso ADCH
+	    movf       ADCH_TMP, f    ; Si UNI < 10, reviso ADCH
 	    btfsc      STATUS, 2  ; Si es 0
 	    return                ; return, BCD == UNI
-	    decf       ADCH, f    ; Si no, decremento ADCH
+	    decf       ADCH_TMP, f    ; Si no, decremento ADCH
 CONTINUE    movlw      0x0A
-	    subwf      UNI, w
-	    movwf      UNI        ; else,
+	    subwf      UNI, w     ; Carga UNI
+	    movwf      UNI        ; ... con UNI - 10
 	    incf       DEC, f     ; ... DEC++
-	    movlw      0x0A       ; sub
+	    movlw      0x0A       ; Resta
 	    subwf      DEC, w     ; ... DEC - 10
-	    btfss      STATUS, 0  ; if DEC < 0
-	    goto       INI_BCD    ; goto next UNI
-	    incf       CEN, f     ; else CEN++
-	    clrf       DEC        ;
-	    
-	    movlw      0x0A       ; sub
+	    btfss      STATUS, 0  ; si DEC < 0
+	    goto       INI_BCD    ; ... vuelve a evaluar UNI
+	    incf       CEN, f     ; ... si no, CEN++
+	    clrf       DEC        ; Borra CEN
+	    movlw      0x0A       ; Resta
 	    subwf      CEN, w     ; ... DEC - 10
-	    btfss      STATUS, 0  ; if DEC < 0
-	    goto       INI_BCD    ; goto next UNI
-	    incf       MIL, f     ; else CEN++
-	    clrf       CEN        ;
-	    
-	    goto       INI_BCD    ; start over
+	    btfss      STATUS, 0  ; si DEC < 0
+	    goto       INI_BCD    ; ... evalua siguiente UNI
+	    incf       MIL, f     ; si no, CEN++
+	    clrf       CEN        ; Borra CEN
+	    goto       INI_BCD    ; Vuelve a evaluar
 
 ;######################################
 ; Rutina para convertir valor de ADC
@@ -384,7 +458,9 @@ WRITE_CHAR
 	    movf       CHAR, w
 	    movwf      MUL1
 	    movlw      0x05
-	    movwf      MUL2
+	    movwf      MUL2L
+	    movlw      0x00
+	    movwf      MUL2H
 	    call       MULT
 	    clrf       CNT
 CHAR_LOOP   movlw      0x08
@@ -404,6 +480,7 @@ CHAR_LOOP   movlw      0x08
 ; Pantalla principal.
 ;######################################
 MAIN_SCREEN
+	    ;## Titulo ##;
 	    movlw      0x0F
 	    movwf      XPOS
 	    clrf       YPOS
@@ -429,6 +506,7 @@ MAIN_SCREEN
 	    movlw      0x49           ; I
 	    call       WRITE_CHAR
 	    
+	    ;## ADC ##;
 	    movlw      0x01
 	    movwf      XPOS
 	    movlw      0x02
@@ -446,10 +524,8 @@ MAIN_SCREEN
 	    call       WRITE_CHAR
 	    movlw      0x20           ; 
 	    call       WRITE_CHAR
-	    
-	    call       TO_BCD
-	    call       TO_ASCII
-	    
+	    call       TO_BCD         ; Convierte ADCL y ADH a BCD
+	    call       TO_ASCII       ; Convierte valores BCD a ASCII
 	    movf       MIL, w
 	    call       WRITE_CHAR
 	    movf       CEN, w
@@ -459,7 +535,7 @@ MAIN_SCREEN
 	    movf       UNI, w
 	    call       WRITE_CHAR
 	    
-	    
+	    ;## Voltaje ##;
 	    movlw      0x01
 	    movwf      XPOS
 	    movlw      0x03
@@ -477,7 +553,63 @@ MAIN_SCREEN
 	    call       WRITE_CHAR
 	    movlw      0x20           ; 
 	    call       WRITE_CHAR
-	    movlw      0x30           ; 0
+	    
+	    bcf        STATUS, RP0
+	    bcf        STATUS, RP1
+	    movlw      0x05           ; Multiplica ADC
+	    movwf      MUL1           ; por 0x05
+	    movf       ADCL, w
+	    movwf      MUL2L
+	    movf       ADCH, w
+	    movwf      MUL2H
+	    call       MULT
+	    
+	    movlw      0x03           ; Carga 1023 = 0x03FF
+            movwf      ACCaHI         ; ... en Denominador
+            movlw      0FF
+            movwf      ACCaLO
+            movf       RESH, w        ; Carga resultado de
+            movwf      ACCbHI         ; ... multiplicación
+            movf       RESL, w        ; ... en numerador
+            movwf      ACCbLO
+            call       D_divS         ; División, para obtener valor en V
+	    
+	    movlw      0x30           ; Convierte resultado
+	    addwf      ACCbLO, w      ; ... a ASCII
+	    call       WRITE_CHAR     ;
+	    
+	    movlw      0x2E           ; .
+	    call       WRITE_CHAR
+	    
+	    movlw      0x0A           ; Multiplica el resto
+	    movwf      MUL1           ; ... de la división por 10
+	    movf       ACCcLO, w
+	    movwf      MUL2L
+	    movf       ACCcHI, w
+	    movwf      MUL2H
+	    call       MULT
+	    
+	    movlw      0x03           ; Carga 1023 = 0x03FF
+            movwf      ACCaHI         ; ... en Denominador
+            movlw      0FF
+            movwf      ACCaLO
+	    movf       RESH, w        ; Carga resultado de
+            movwf      ACCbHI         ; ... multiplicación
+            movf       RESL, w        ; ... en numerador
+            movwf      ACCbLO
+            call       D_divS         ; División, para obtener decimal de V
+	    
+	    movlw      0x30           ; Convierte resultado
+	    addwf      ACCbLO, w      ; ... a ASCII
+	    call       WRITE_CHAR  ;
+	    
+	    movlw      0x20           ; 
+	    call       WRITE_CHAR
+	    movlw      0x5B           ; [ 
+	    call       WRITE_CHAR
+	    movlw      0x56           ; V 
+	    call       WRITE_CHAR
+	    movlw      0x5D           ; ] 
 	    call       WRITE_CHAR
 	    
 	    return
@@ -488,7 +620,7 @@ MAIN_SCREEN
 INIT_CLOCK
 	    bsf        STATUS, RP0
 	    movlw      0x61
-	    movwf      OSCCON
+	    movwf      OSCCON          ; CLK interno, 4 MHz
 	    return
 	    
 ;######################################
@@ -552,7 +684,7 @@ INIT_TMR1
 	    bcf        STATUS, RP0
 	    bcf        STATUS, RP1
 	    movlw      0x02
-	    movwf      TMR1_CNT
+	    movwf      TMR1_CNT         ; Para contar cada 1 seg
 	    clrf       TMR1L
 	    clrf       TMR1H
 	    movlw      0x31
@@ -599,8 +731,8 @@ MAIN
 ;######################################
 TABLE_CALL
 	    movwf      TMP
-	    movlw      0xEB
-	    subwf      TMP, w
+	    movlw      0xEB               ; (0x4F-0x20)*0x05 = 0xEB -> Primer valor de tabla H
+	    subwf      TMP, w       
 	    btfsc      STATUS, C
 	    goto       TABLE_H
 	    btfsc      RESH, 0
